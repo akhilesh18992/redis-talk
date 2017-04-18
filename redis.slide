@@ -1,0 +1,359 @@
+Redis Training
+20 Apr 2017
+Tags: foo, bar, baz
+
+Akhilesh Kumar Singh
+Myntra
+akhilesh.singh@myntra.com
+
+* Topics
+
+: test master slave with failure
+: test sentinel
+: get aof file
+: get rdb file
+
+: what about scan? data types with example? touch all commands( ex monitor, info)? Sentinel?
+: in persistence shall i talk about all configurations of AOF and RDB in detail?
+: shall i go with command examples, like in data structures/pubsub/RDB/AOF
+: what about topics like pipelining/memory optimizations/transaction/secondary index/
+
+- Basics
+- Internals
+- Inbuilt data structures
+- Persistence
+- Replication
+- Atomicity
+- Lua scripting
+- Cluster
+- Use cases in myntra
+- Ecosystems
+
+* What is redis?
+: Memcache-ish in-memory key/value store; But its also persistent!; And it also has very cool value types:
+: lists, sets, sorted sets, hash tables, append-able buffers; Open source; very helpful and friendly community;
+: Why is Redis different compared to other key-value stores?
+
+* Redis(REmote DIctionary Server)
+- In-memory data structure store
+- Persistent(RDB and AOF)
+- 2^32 keys and hash, list, set, and sorted set can hold 2^32 elements
+- Empty instance uses ~ 1MB of memory.
+
+    redis> SET foo bar
+    OK
+    redis> GET foo
+    "bar"
+    redis> EXPIRE foo 2
+    (integer) 1
+    redis> GET foo
+    (nil)
+
+* Memcached?
+
+- Replication
+- Persistence
+- Rich set of data types (far beyond memcached’s simple key-value-pairs).
+
+* Pipeline
+
+* Internals
+
+* Simple Dynamic Strings
+
+- Everything in Redis is ultimately represented as a string.
+: Even collections like lists, sets, sorted sets, and maps are composed of strings.
+- Redis defines a special structure, which it calls simple dynamic string or SDS.
+
+Consists of three parts:
+
+- buf: A character array that stores the string
+- len: A long type that stores the length of the buff array
+- free: Number of additional bytes available for use
+
+    struct sdshdr {
+        int len;
+        int free;
+        char buf[];
+    };
+
+- Storing len separately allows for string length lookup in fixed time.
+
+
+* SDS internals
+
++--------+-------------------------------+-----------+
+| Header | Binary safe C alike string... | Null term |
++--------+-------------------------------+-----------+
+
+- Redis 3.0.x header takes 8 bytes + 1 byte
+- String *str* takes about 9 + 3 + 1 bytes of data
+
+*Resize* *Strategy*
+
+- SDS_MAX_PREALLOC = 1MB(default)
+- For length < SDS_MAX_PREALLOC -> twice memory is allocated.
+- For length > SDS_MAX_PREALLOC -> requested + SDS_MAX_PREALLOC is allocated.
+
+* Zip List Representation
+
+List data
++--------+---------+
+| 4 | 0  | "one\0" |
++--------+---------+
+
+- Redis list are stored in doubly linked list
+- Three pointers, two integers, data and null
+- Zip list sequence of length, length, string elements.
+- First length is the size of the previous entry (for easy scanning in both directions)
+- The second length is the size of the current entry, and the string is the stored data itself.
+
+So ziplist reduces lot of data overhead but it comes at a tradeoff: CPU, memory, max element size
+
+* Max Memory Policy
+
+- When the memory limit is reached Redis will try to remove keys
+
+
+# Don't use more memory than the specified amount of bytes.
+  #
+  # according to the eviction policy selected (see maxmemory-policy).
+  #
+  # If Redis can't remove keys according to the policy, or if the policy is
+  # set to 'noeviction', Redis will start to reply with errors to commands
+  # that would use more memory, like SET, LPUSH, and so on, and will continue
+  # to reply to read-only commands like GET.
+  #
+  # This option is usually useful when using Redis as an LRU cache, or to set
+  # a hard memory limit for an instance (using the 'noeviction' policy).
+  #
+  # WARNING: If you have slaves attached to an instance with maxmemory on,
+  # the size of the output buffers needed to feed the slaves are subtracted
+  # from the used memory count, so that network problems / resyncs will
+  # not trigger a loop where keys are evicted, and in turn the output
+  # buffer of slaves is full with DELs of keys evicted triggering the deletion
+  # of more keys, and so forth until the database is completely emptied.
+  #
+  # In short... if you have slaves attached it is suggested that you set a lower
+  # limit for maxmemory so that there is some free RAM on the system for slave
+  # output buffers (but this is not needed if the policy is 'noeviction').
+  #
+  # maxmemory <bytes>
+
+  # MAXMEMORY POLICY: how Redis will select what to remove when maxmemory
+  # is reached. You can select among five behaviors:
+  #
+  # volatile-lru -> remove the key with an expire set using an LRU algorithm
+  # allkeys-lru -> remove any key according to the LRU algorithm
+  # volatile-random -> remove a random key with an expire set
+  # allkeys-random -> remove a random key, any key
+  # volatile-ttl -> remove the key with the nearest expire time (minor TTL)
+  # noeviction -> don't expire at all, just return an error on write operations
+  #
+  # Note: with any of the above policies, Redis will return an error on write
+  #       operations, when there are no suitable keys for eviction.
+  #
+  #       At the date of writing these commands are: set setnx setex append
+  #       incr decr rpush lpush rpushx lpushx linsert lset rpoplpush sadd
+  #       sinter sinterstore sunion sunionstore sdiff sdiffstore zadd zincrby
+  #       zunionstore zinterstore hset hsetnx hmset hincrby incrby decrby
+  #       getset mset msetnx exec sort
+  #
+  # The default is:
+  #
+  # maxmemory-policy noeviction
+
+  # LRU and minimal TTL algorithms are not precise algorithms but approximated
+  # algorithms (in order to save memory), so you can tune it for speed or
+  # accuracy. For default Redis will check five keys and pick the one that was
+  # used less recently, you can change the sample size using the following
+  # configuration directive.
+  #
+  # The default of 5 produces good enough results. 10 Approximates very closely
+  # true LRU but costs a bit more CPU. 3 is very fast but not very accurate.
+  #
+  # maxmemory-samples 5
+
+* Memory Optimization
+
+    hash-max-zipmap-entries 100
+    hash-max-zipmap-value 1024
+
+- Small hashes are encoded in a very small space
+- Have single hash representing users instead of using different keys for name, surname, email.
+- A few keys use a lot more memory than a single key containing a hash with a few fields.
+- When hashes are small we can instead just encode them in an O(N) data structure, like a linear array with length-prefixed key value pairs.
+- hash fields and values are not (always) represented as full featured Redis objects
+- No ttl
+- So hashes are memory efficient.
+
+*Example*
+
+Key: object:1234
+    HSET object:12 34 somevalue
+
+
+* Inbuild Data Structures
+
+* Redis keys
+
+- keys are binary safe
+- Very long keys may impact performance
+- Very small may not be
+- Max allowed key size is 512MB
+
+* Strings
+
+    > set mykey somevalue
+    OK
+    > get mykey
+    "somevalue"
+
+    > set mykey newval nx
+    (nil)
+    > set mykey newval xx
+    OK
+
+- INCR, INCRBY, DECR, DECRBY, GETSET, MSET, MGET, exists, del, type, expire, ttl, APPEND, GETRANGE
+
+* List
+
+Use cases
+
+- Redis lists are implemented via Linked Lists.
+- Element addition is performed in constant time.
+- Can be used for communication between processes.
+- Automatic creation and removal of keys.
+- RPUSH, LPUSH, LRANGE, RPOP, LPOP, LTRIM, LLEN
+
+*Blocking* *operations* *on* *lists*
+
+- BRPOP and BLPOP
+- Block if the list is empty
+- Return on new element or timeout.
+
+* Hashes
+
+Use cases
+- Key with field-value pairs
+- Small hashes (i.e., a few elements with small values) are encoded in special way in memory that make them very memory efficient.
+- HMSET, HSET, HMGET, HGET, hincrby
+
+    > hmset user:1000 username antirez birthyear 1977 verified 1
+    OK
+    > hget user:1000 username
+    "antirez"
+    > hget user:1000 birthyear
+    "1977"
+    > hgetall user:1000
+    1) "username"
+    2) "antirez"
+    3) "birthyear"
+    4) "1977"
+    5) "verified"
+    6) "1"
+
+* Sets
+
+- Unordered collection of strings
+- Supports intersection,unions, difference, extract a random element
+- SADD, SMEMBERS, SISMEMBER, SINTER, sunionstore, spop, scard, SRANDMEMBER
+
+* Sorted Sets
+
+- unique, non-repeating string elements
+- every element in a sorted set is associated with a floating point value, called the score
+- On every element addition redis performs O(log(N)) operation but no operations are needed for read
+- ZADD, ZREVRANGE, ZRANGE, WITHSCORES, ZRANGEBYSCORE, zremrangebyscore, zrank, ZREVRANK,
+
+    > zadd hackers 1940 "Alan Kay"
+    (integer) 1
+
+*Lexicographical* *scores*
+
+- elements in a sorted set are all inserted with the same identical score
+- ZRANGEBYLEX, ZREVRANGEBYLEX, ZREMRANGEBYLEX and ZLEXCOUNT.
+
+* PUB/SUB
+
+- Implements Publish/Subscribe messaging paradigm where published messages are characterized into channels, without knowledge of subscribers.
+- SUBSCRIBE, PSUBSCRIBE, UNSUBSCRIBE, PUNSUBSCRIBE, PING and QUIT
+
+    redis> SUBSCRIBE first second
+    Reading messages... (press Ctrl-C to quit)
+    1) "subscribe"
+    2) "first"
+    3) (integer) 1
+    1) "subscribe"
+    2) "second"
+    3) (integer) 2
+
+    After Publishing
+
+    1) "message"
+    2) "second"
+    3) "Hello"
+
+    redis> PUBLISH second Hello
+* Persistence
+
+* RDB
+
+- Performs point-in-time snapshots of your dataset at specified intervals.
+- More like a backup.
+- Parent process forks a child to do the disk I/O.
+- RDB allows faster restarts with big datasets compared to AOF.
+- Lose the latest minutes of data.
+
+* AOF
+
+: AOF can be slower than RDB depending on the exact fsync policy. In general with fsync set to every second performances
+: are still very high, and with fsync disabled it should be exactly as fast as RDB even under high load. Still RDB is
+: able to provide more guarantees about the maximum latency even in the case of an huge write load.
+
+- Logs every write operation received by the server.
+- no fsync at all, fsync every second, fsync at every query.
+- redis-check-aof tool to fix half written commands.
+- Files are usually bigger than the equivalent RDB.
+- AOF rewrite to reduce file size.
+
+# no: don't fsync, just let the OS flush the data when it wants. Faster.
+# always: fsync after every write to the append only log. Slow, Safest.
+# everysec: fsync only one time every second. Compromise.
+
+* RDB or AOF?
+: If you care a lot about your data, but still can live with a few minutes of data loss in case of disasters,
+: you can simply use RDB alone.
+
+: There are many users using AOF alone, but we discourage it since to have an RDB snapshot from time to time is a
+: great idea for doing database backups, for faster restarts, and in the event of bugs in the AOF engine.
+
+- If you can live with a few minutes of data loss in case of disasters, you can simply use RDB alone.
+- Use AOF for more real time persistence.
+- Its recommended to use RDB with AOF, for faster restart and in event of bugs in AOF engine.
+
+* Replication
+
+- repl-ping-slave-period 10
+- repl-disable-tcp-nodelay no # If you select "yes" Redis will use a smaller number of TCP packets and
+                              # less bandwidth to send data to slaves. But this can add a delay for
+                              # the data to appear on the slave side, up to 40 milliseconds with
+                              # Linux kernels using a default configuration.
+                              #
+                              # If you select "no" the delay for data to appear on the slave side will
+                              # be reduced but more bandwidth will be used for replication.
+                              #
+                              # By default we optimize for low latency, but in very high traffic conditions
+                              # or when the master and slaves are many hops away, turning this to "yes" may
+                              # be a good idea.
+
+* Frequently Used Commands
+
+* Scan
+
+*
+
+* Hands On
+
+
+* References
